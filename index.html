@@ -139,8 +139,19 @@
                     <input type="number" id="inputTimeLimit" value="60">
                 </div>
                 <div class="form-group">
-                    <label>📤 上传背景图片（自动压缩，完美铺满不移位）：</label>
+                    <label>📤 上传背景图片（自动强力压缩，尽量随分享链接发给学生）：</label>
                     <input type="file" id="bgUploader" accept="image/*" onchange="uploadAndCompressBg(event)">
+                </div>
+                <div class="form-group">
+                    <label>🎨 或选择预设背景（体积极小，保证能随分享链接发给学生）：</label>
+                    <select id="inputBgPreset" style="width:100%; padding:6px; border-radius:4px; border:1px solid #ccc;" onchange="selectBgPreset(this.value)">
+                        <option value="">默认深棕色</option>
+                        <option value="orchard">🍏 果园清新绿</option>
+                        <option value="sky">☁️ 晴朗天空蓝</option>
+                        <option value="board">📗 教室黑板绿</option>
+                        <option value="night">🌌 梦幻夜空紫</option>
+                        <option value="beach">🏖️ 暖阳沙滩橙</option>
+                    </select>
                 </div>
                 
                 <h3 style="color:#5d4037; margin:8px 0 4px 0; font-size:14px;">题目管理区：</h3>
@@ -166,6 +177,7 @@
             rules: "1. 观察上方题目。\n2. 切碎正确的过去式水果。\n3. 小心炸弹！",
             timeLimit: 60,
             bgImage: "",
+            bgPreset: "",
             questions: [
                 { q: "eat 的过去式是？", correct: "ate", wrongs: ["eated", "eaten"] },
                 { q: "go 的过去式是？", correct: "went", wrongs: ["goed", "gone"] },
@@ -173,16 +185,36 @@
             ]
         };
 
+        // 紧凑编码：JSON → UTF-8 字节 → URL 安全的 Base64（比旧的 encodeURIComponent+btoa 短约 2/3）
+        function encodeConfig(obj) {
+            const bytes = new TextEncoder().encode(JSON.stringify(obj));
+            let bin = '';
+            for (let i = 0; i < bytes.length; i += 8192) {
+                bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+            }
+            return window.btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        }
+        function decodeConfig(str) {
+            const bin = window.atob(str.replace(/-/g, '+').replace(/_/g, '/'));
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            return JSON.parse(new TextDecoder().decode(bytes));
+        }
+
         let gameConfig = defaultConfig;
-        // 优先从网址 ?data= 参数加载老师分享的题目配置（编码在网址里，任何设备打开都能还原）；
-        // 没有 ?data= 时才读本机 localStorage 的房间数据（仅本机有效）
+        // 优先从网址参数加载老师分享的题目配置（编码在网址里，任何设备打开都能还原）；
+        // ?d= 是新的紧凑格式，?data= 是兼容旧链接的格式；都没有时才读本机 localStorage 的房间数据
         try {
-            const sharedData = urlParams.get('data');
-            if (sharedData) {
-                const loaded = JSON.parse(decodeURIComponent(window.atob(sharedData)));
-                if (loaded && loaded.questions && loaded.questions.length > 0) {
-                    gameConfig = loaded;
-                }
+            let loaded = null;
+            const shortData = urlParams.get('d');
+            const legacyData = urlParams.get('data');
+            if (shortData) {
+                loaded = decodeConfig(shortData);
+            } else if (legacyData) {
+                loaded = JSON.parse(decodeURIComponent(window.atob(legacyData)));
+            }
+            if (loaded && loaded.questions && loaded.questions.length > 0) {
+                gameConfig = loaded;
             } else {
                 const savedData = localStorage.getItem('fruit_game_' + roomId);
                 if (savedData) {
@@ -191,20 +223,33 @@
             }
         } catch(e) { console.log(e); }
 
-        function applyBackground(url) {
-            if (!url) return;
-            document.body.style.backgroundImage = `url('${url}')`;
-        }
+        const bgPresets = {
+            orchard: "linear-gradient(180deg, #a8e063 0%, #4e9425 100%)",
+            sky: "linear-gradient(180deg, #89f7fe 0%, #5b8fd6 100%)",
+            board: "linear-gradient(180deg, #2c5f2d 0%, #16301a 100%)",
+            night: "linear-gradient(180deg, #41295a 0%, #2f0743 100%)",
+            beach: "linear-gradient(180deg, #ffd873 0%, #ff9a44 100%)"
+        };
 
-        if (gameConfig.bgImage) {
-            applyBackground(gameConfig.bgImage);
+        function applyConfigBackground() {
+            if (gameConfig.bgImage) {
+                document.body.style.backgroundImage = `url('${gameConfig.bgImage}')`;
+            } else if (gameConfig.bgPreset && bgPresets[gameConfig.bgPreset]) {
+                document.body.style.backgroundImage = bgPresets[gameConfig.bgPreset];
+            } else {
+                document.body.style.backgroundImage = "";
+            }
         }
+        applyConfigBackground();
 
         document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('adminModal').style.display = 'none';
             document.getElementById('rulesModal').style.display = 'flex';
             updateUI();
         });
+
+        // 图片压缩后能否放进分享链接的判断标准（字符数）
+        const BG_SHARE_LIMIT = 16000;
 
         function uploadAndCompressBg(event) {
             const file = event.target.files[0];
@@ -214,7 +259,7 @@
                 const img = new Image();
                 img.onload = function() {
                     const canvasImg = document.createElement('canvas');
-                    const MAX_WIDTH = 800; const MAX_HEIGHT = 600;
+                    const MAX_WIDTH = 480; const MAX_HEIGHT = 360;
                     let width = img.width; let height = img.height;
                     if (width > height) {
                         if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
@@ -224,14 +269,30 @@
                     canvasImg.width = width; canvasImg.height = height;
                     const ctxImg = canvasImg.getContext('2d');
                     ctxImg.drawImage(img, 0, 0, width, height);
-                    const compressedDataUrl = canvasImg.toDataURL('image/jpeg', 0.5);
+                    // 逐级降低质量，直到小到能随分享链接携带为止
+                    let quality = 0.5;
+                    let compressedDataUrl = canvasImg.toDataURL('image/jpeg', quality);
+                    while (compressedDataUrl.length > BG_SHARE_LIMIT && quality > 0.2) {
+                        quality -= 0.06;
+                        compressedDataUrl = canvasImg.toDataURL('image/jpeg', quality);
+                    }
                     gameConfig.bgImage = compressedDataUrl;
-                    applyBackground(compressedDataUrl);
-                    alert("✅ 背景图片已上传并完美自适应铺满！");
+                    applyConfigBackground();
+                    if (compressedDataUrl.length > BG_SHARE_LIMIT) {
+                        alert("⚠️ 这张图片细节太多，压缩后仍偏大：本机使用没问题，但分享链接将不包含它。\n建议改用下方的【预设背景】，保证学生也能看到背景。");
+                    } else {
+                        alert("✅ 背景图片已强力压缩完成，可以随分享链接一起发给学生！");
+                    }
                 };
                 img.src = e.target.result;
             };
             reader.readAsDataURL(file);
+        }
+
+        function selectBgPreset(preset) {
+            gameConfig.bgPreset = preset;
+            if (preset) gameConfig.bgImage = "";
+            applyConfigBackground();
         }
 
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -328,7 +389,7 @@
 
         let score = 0, currentQIndex = 0, timeLeft = gameConfig.timeLimit;
         let timerInterval = null, fruits = [], particles = [], scoreTexts = [], mouseTrail = [];
-        let isGameRunning = false, confetti = [];
+        let isGameRunning = false, confetti = [], fruitHalves = [];
 
         class Confetti {
             constructor() {
@@ -381,6 +442,43 @@
                 ctx.save(); ctx.globalAlpha = Math.max(0, this.alpha);
                 ctx.beginPath(); ctx.arc(this.x, this.y, this.radius, 0, Math.PI*2);
                 ctx.fillStyle = this.color; ctx.fill(); ctx.restore();
+            }
+        }
+
+        // 水果被切开后的两个半块：沿切割线分开、旋转着飞出并坠落
+        class FruitHalf {
+            constructor(x, y, emoji, sliceAngle, dir) {
+                this.x = x; this.y = y; this.emoji = emoji;
+                this.sliceAngle = sliceAngle; this.dir = dir;
+                const push = 2.5 + Math.random() * 2;
+                // 沿垂直于刀痕的方向分开
+                this.vx = Math.cos(sliceAngle + Math.PI / 2) * push * dir + (Math.random() - 0.5) * 1.5;
+                this.vy = Math.sin(sliceAngle + Math.PI / 2) * push * dir - 2.5;
+                this.rot = 0;
+                this.vRot = dir * (0.06 + Math.random() * 0.1);
+                this.alpha = 1;
+            }
+            update() {
+                this.x += this.vx; this.y += this.vy;
+                this.vy += 0.3; this.rot += this.vRot;
+                this.alpha -= 0.018;
+            }
+            draw() {
+                ctx.save();
+                ctx.globalAlpha = Math.max(0, this.alpha);
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.rot + this.sliceAngle);
+                // 只显示切割线一侧的半个水果
+                ctx.beginPath();
+                if (this.dir === 1) { ctx.rect(-70, 0, 140, 70); } else { ctx.rect(-70, -70, 140, 70); }
+                ctx.clip();
+                ctx.font = '75px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                ctx.fillText(this.emoji, 0, 0);
+                // 切面高光，模拟果肉断面
+                ctx.globalAlpha = Math.max(0, this.alpha) * 0.7;
+                ctx.strokeStyle = '#fffde7'; ctx.lineWidth = 3;
+                ctx.beginPath(); ctx.moveTo(-34, 0); ctx.lineTo(34, 0); ctx.stroke();
+                ctx.restore();
             }
         }
 
@@ -449,6 +547,18 @@
                         fruits.splice(idx, 1);
                     } else {
                         for(let k=0; k<15; k++) particles.push(new Particle(fruit.x, fruit.y, fruit.fruitObj.juice));
+                        // 切开特效：按刀痕方向把水果分成两半飞出
+                        let sliceAngle = Math.random() * Math.PI;
+                        if (mouseTrail.length > 1) {
+                            const p1 = mouseTrail[mouseTrail.length - 2];
+                            const p2 = mouseTrail[mouseTrail.length - 1];
+                            if (p2.x !== p1.x || p2.y !== p1.y) {
+                                sliceAngle = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+                            }
+                        }
+                        fruitHalves.push(new FruitHalf(fruit.x, fruit.y, fruit.fruitObj.emoji, sliceAngle, -1));
+                        fruitHalves.push(new FruitHalf(fruit.x, fruit.y, fruit.fruitObj.emoji, sliceAngle, 1));
+                        fruits.splice(idx, 1);
                         if (fruit.isCorrect) {
                             playSound('correct'); score += 10;
                             scoreTexts.push(new FloatingText(fruit.x, fruit.y, "+10", "#00e676"));
@@ -491,6 +601,7 @@
             }
 
             particles.forEach((p, i) => { p.update(); p.draw(); if (p.alpha <= 0) particles.splice(i, 1); });
+            fruitHalves.forEach((h, i) => { h.update(); h.draw(); if (h.alpha <= 0 || h.y > canvas.height + 100) fruitHalves.splice(i, 1); });
             scoreTexts.forEach((st, i) => { st.update(); st.draw(); if (st.alpha <= 0) scoreTexts.splice(i, 1); });
 
             spawnFruit();
@@ -503,7 +614,7 @@
         function startGame() {
             document.getElementById('rulesModal').style.display = 'none';
             document.getElementById('victoryModal').style.display = 'none';
-            confetti = []; isGameRunning = true;
+            confetti = []; fruits = []; fruitHalves = []; isGameRunning = true;
             timeLeft = gameConfig.timeLimit; score = 0; currentQIndex = 0;
             document.getElementById('scoreText').innerText = score;
             startBGM();
@@ -528,6 +639,7 @@
             document.getElementById('inputTitle').value = gameConfig.title;
             document.getElementById('inputRules').value = gameConfig.rules;
             document.getElementById('inputTimeLimit').value = gameConfig.timeLimit;
+            document.getElementById('inputBgPreset').value = gameConfig.bgPreset || "";
             renderQuestionsForm();
         }
 
@@ -561,6 +673,7 @@
             gameConfig.title = document.getElementById('inputTitle').value;
             gameConfig.rules = document.getElementById('inputRules').value;
             gameConfig.timeLimit = parseInt(document.getElementById('inputTimeLimit').value) || 60;
+            gameConfig.bgPreset = document.getElementById('inputBgPreset').value;
             gameConfig.questions.forEach((q, idx) => {
                 q.q = document.getElementById(`q_title_${idx}`).value;
                 q.correct = document.getElementById(`q_correct_${idx}`).value;
@@ -586,15 +699,17 @@
             const newRoomId = document.getElementById('inputRoomId').value.trim() || 'default_room';
             localStorage.setItem('fruit_game_' + newRoomId, JSON.stringify(gameConfig));
 
-            // 把完整题目配置编码进网址，学生在任何设备点开都能还原老师出的题
+            // 把完整题目配置紧凑编码进网址，学生在任何设备点开都能还原老师出的题
             const base = `${window.location.origin}${window.location.pathname}`;
             let note = "";
-            let shareUrl = `${base}?data=${window.btoa(encodeURIComponent(JSON.stringify(gameConfig)))}`;
-            if (shareUrl.length > 8000 && gameConfig.bgImage) {
+            let shareUrl = `${base}?d=${encodeConfig(gameConfig)}`;
+            if (gameConfig.bgImage && shareUrl.length > BG_SHARE_LIMIT * 1.5) {
                 // 背景图太大时不放进链接，避免微信/QQ截断网址导致打不开
                 const slim = Object.assign({}, gameConfig, { bgImage: "" });
-                shareUrl = `${base}?data=${window.btoa(encodeURIComponent(JSON.stringify(slim)))}`;
-                note = "\n\n⚠️ 背景图片较大，分享链接中不包含背景图（题目和其他设置完全正常）。";
+                shareUrl = `${base}?d=${encodeConfig(slim)}`;
+                note = "\n\n⚠️ 上传的背景图片过大，未包含在链接中，学生将看到预设/默认背景。想让学生看到背景，请在后台改选【预设背景】后重新复制。";
+            } else if (gameConfig.bgImage) {
+                note = "\n\n💡 链接已包含背景图片，所以较长；如在微信发送后点不开，请改用【预设背景】重新复制，链接会短很多。";
             }
 
             navigator.clipboard.writeText(shareUrl).then(() => {
